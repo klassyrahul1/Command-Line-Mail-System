@@ -1,11 +1,11 @@
 all: smserver smclient
 
 smserver: smserver.c
-	gcc -Wall -g smserver.c -o smserver
+	gcc -Wall -Wextra -g -o smserver smserver.c
 
 smclient: smclient.c
-	gcc -Wall -g smclient.c -o smclient
+	gcc -Wall -Wextra -g -o smclient smclient.c
 
 clean:
 	rm -f smserver smclient
-	rm -rf mailboxes/
+	rm -rf mailboxes
