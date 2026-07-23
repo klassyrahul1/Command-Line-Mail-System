@@ -1,100 +1,67 @@
-# SimpleMail
+Name: Gampa Reshwik
+Roll No: 23CS30020
 
-A minimal TCP-based mail system implemented in C, built for CS39006 (Computer Networks), Mini Project 2. SimpleMail defines two sub-protocols over a single connection-oriented server/client model:
+SimpleMail Implementation Details
 
-- **SMTP2** — a simplified send protocol for delivering mail to a user's mailbox.
-- **SMP** — a simplified mailbox-retrieval protocol, authenticated via a nonce + DJB2 hash challenge.
+The project consists of a server (smserver.c) and an interactive client (smclient.c) 
+that communicate over TCP using the custom SMTP2 and SMP protocols. 
+Both programs are written in C and strictly adhere to the provided specifications.
 
-> **Status: Work in progress.** The connection setup, mode negotiation, and user-loading logic are functional. The actual SMTP2 and SMP session dialogues (message composition, delivery, authentication, mailbox listing) are stubbed out and not yet implemented — see [Implementation Status](#implementation-status) below.
+Compilation and Execution:
+I have included a Makefile to streamline the build process.
+To compile: run "make"
+To clean up: run "make clean"
+Server Execution: ./smserver <port> <userfile>
+Client Execution: ./smclient <server_ip> <port>
 
-## Repository Contents
+Server Design & Concurrency (smserver.c):
+To handle multiple clients simultaneously without blocking, I implemented an event-driven architecture using select().
 
-| File | Description |
-|---|---|
-| `smserver.c` | Server: loads users, listens for connections, dispatches to SMTP2/SMP handlers |
-| `smclient.c` | Client: connects to the server and drives the send/check-mailbox flows |
-| `users.txt` | Sample user credential file (`username password`, one per line) |
-| `Makefile` | Build rules for `smserver` and `smclient` |
+State Machine: Each client connection is managed via a dedicated state machine (ClientState) 
+tracking exactly where they are in the protocol sequence (e.g., waiting for mode, receiving TO, sending BODY). 
+This ensures out-of-sequence commands are caught and rejected immediately.
 
-## Building
+Mailbox Management: On startup, the server automatically reads the users.txt file and 
+creates a "mailboxes/" directory along with a subdirectory for each user.
 
-```bash
-make        # builds both smserver and smclient
-make clean  # removes binaries and the mailboxes/ directory
-```
+ID Generation: To ensure message IDs are monotonically increasing and never reused (even after deletions), 
+the server scans each user's directory on startup to find the highest existing ID and resumes from there.
 
-Requires `gcc` on a POSIX system (uses BSD sockets — Linux/macOS/WSL).
+Timeout Handling: The server records the connection time of each client. During the main select() loop, 
+it checks if any client in the initial mode-selection state has been idle for more than 30 seconds. 
+If so, it drops the connection to prevent resource exhaustion.
 
-## Running
+Client Design & User Interface (smclient.c):
+The client provides a clean, interactive terminal UI that completely abstracts the raw protocol commands from the user.
 
-**Start the server:**
+COUNT Command Integration: While COUNT is not exposed as a standalone numbered option in the user menu, 
+it is fully implemented and utilized under the hood. The client automatically issues the COUNT command upon a successful login, 
+and after returning to the mailbox menu, to dynamically display the total number of messages in the UI prompt 
+(e.g., Mailbox for alice (3 messages)).
 
-```bash
-./smserver <port> <userfile>
-# e.g.
-./smserver 5000 users.txt
-```
+Modularity: The UI logic is separated from the networking logic. 
+Functions like handle_mode_send() and handle_mode_recv() manage the specific protocol handshakes, 
+making the code much easier to read and maintain.
 
-On startup, the server loads credentials from `userfile` and creates a `mailboxes/<username>/` directory for each user (created under the directory `smserver` is run from).
+Reconnection Logic: As per the protocol, after a mail is sent or a mailbox session ends, the client sends QUIT, closes the socket, 
+and returns to the main menu. If the user selects another option, the client seamlessly opens a fresh TCP connection.
 
-**Run the client:**
+Idle Disconnect Detection: I implemented a select() loop in the client's main menu. 
+It listens to both the standard input (user typing) and the server socket. 
+If the server terminates the connection due to the 30-second timeout, 
+the client detects the socket closure instantly and exits gracefully rather than hanging.
 
-```bash
-./smclient <server_ip> <port>
-# e.g.
-./smclient 127.0.0.1 5000
-```
+String Parsing: I implemented a robust line-reading function that reliably strips both \r and \n. 
+This prevents trailing carriage returns from breaking string comparisons or output formatting.
 
-The client presents a menu:
+Dot-Stuffing (Byte Stuffing): In SMTP2, if the user types a message line beginning with a period, 
+the client automatically prepends an extra period before sending. 
+The server correctly identifies this and removes the extra period before writing to the disk.
 
-```
-1. Send a mail
-2. Check my mailbox
-3. Quit
-```
+DJB2 Authentication: The SMP protocol implements the required challenge-response authentication. 
+The server generates a random 8-character nonce, and the client computes the DJB2 hash of the concatenated password and nonce. 
+The server enforces a strict 3-attempt limit for invalid logins.
 
-## Protocol Overview
-
-Every session begins with a fresh TCP connection. The server sends a greeting, then the client declares its intended mode:
-
-```
-Server -> Client: WELCOME SimpleMail v1.0\r\n
-Client -> Server: MODE SEND\r\n   (or MODE RECV\r\n)
-Server -> Client: OK\r\n          (or ERR Unknown mode\r\n)
-```
-
-- **`MODE SEND`** hands off to the **SMTP2** session (`handle_smtp2_session` / `send_mail`), intended dialogue:
-  `FROM -> TO -> SUB -> BODY -> . -> QUIT`, with delivery into the recipient's mailbox (body capped at 65536 bytes after any byte-stuffing/de-stuffing).
-
-- **`MODE RECV`** hands off to the **SMP** session (`handle_smp_session` / `check_mailbox`), intended dialogue:
-  `AUTH REQUIRED <nonce> -> client computes DJB2(nonce + password) -> AUTH <username> <hash> -> mailbox listing/retrieval`.
-
-Authentication uses the DJB2 string hash (`hash = 5381; hash = hash*33 + c` per character), implemented identically in both client and server so the client can prove knowledge of a password without sending it in the clear.
-
-## Implementation Status
-
-**Done:**
-- TCP socket setup, `bind`/`listen`/`accept` server loop
-- Client connection + greeting consumption
-- `MODE SEND` / `MODE RECV` negotiation and `OK`/`ERR` response
-- User file parsing and per-user mailbox directory creation
-- Shared DJB2 hash function
-
-**TODO / stubbed:**
-- `handle_smtp2_session`: FROM/TO/SUB/BODY dialogue, message framing/de-stuffing, mailbox delivery
-- `handle_smp_session`: nonce generation, `AUTH REQUIRED <nonce>` challenge, credential verification
-- `send_mail` (client): prompting for and sending FROM/TO/SUB/BODY, terminating `.`, `QUIT`
-- `check_mailbox` (client): parsing the nonce, prompting username/password, sending `AUTH`, listing/reading mail
-- Concurrency: server currently handles one connection fully before accepting the next (`select`/`poll` multiplexing planned but not yet wired in)
-- 30-second timeout on the mode-declaration read
-- Malformed-input and error-path handling throughout
-
-## Known Issues
-
-- Server `accept` loop is fully blocking — a slow or idle client stalls all other connections.
-- No bounds/validation on lengths coming off the wire yet in the stub handlers.
-- `users.txt` passwords are stored in plaintext on disk; only the wire exchange is intended to be hashed.
-
-## License
-
-Academic project — coursework submission for CS39006.
+Error Handling: The server validates all inputs. It checks if users exist before accepting TO commands, 
+enforces the 65,536-byte limit on the email body, and rejects malformed protocol sequences. 
+Empty subjects are properly caught and stored as "(no subject)".
